@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>乌克兰局势监控 | Ukraine Monitor</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        body { background-color: #0f172a; color: white; font-family: 'Segoe UI', sans-serif; }
+        #map { height: 400px; border-radius: 8px; }
+        .glass { background: rgba(30, 41, 59, 0.8); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.1); }
+        .pulse { animation: pulse 2s infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+        .news-item { border-left: 3px solid #3b82f6; padding-left: 12px; margin-bottom: 12px; animation: slideIn 0.3s ease-out; }
+        @keyframes slideIn { from { opacity: 0; transform: translateX(-10px); } to { opacity: 1; transform: translateX(0); } }
+    </style>
+</head>
+<body class="p-4">
+    <!-- 顶部 -->
+    <div class="max-w-6xl mx-auto mb-6 flex justify-between items-center">
+        <div class="flex items-center gap-3">
+            <div class="w-3 h-3 bg-red-500 rounded-full pulse"></div>
+            <h1 class="text-2xl font-bold">UKRAINE<span class="text-blue-500">MONITOR</span></h1>
+        </div>
+        <div class="text-sm text-gray-400" id="clock">加载中...</div>
+    </div>
+
+    <!-- 主要内容 -->
+    <div class="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-6">
+        
+        <!-- 左侧：地图和统计 -->
+        <div class="lg:col-span-2 space-y-6">
+            <!-- 统计卡片 -->
+            <div class="grid grid-cols-3 gap-4">
+                <div class="glass p-4 rounded-lg text-center">
+                    <div class="text-2xl font-bold text-blue-400" id="conflict-days">计算中...</div>
+                    <div class="text-xs text-gray-400 mt-1">冲突天数</div>
+                </div>
+                <div class="glass p-4 rounded-lg text-center">
+                    <div class="text-2xl font-bold text-yellow-400" id="event-count">--</div>
+                    <div class="text-xs text-gray-400 mt-1">今日事件</div>
+                </div>
+                <div class="glass p-4 rounded-lg text-center">
+                    <div class="text-2xl font-bold text-green-400">87%</div>
+                    <div class="text-xs text-gray-400 mt-1">网络状态</div>
+                </div>
+            </div>
+
+            <!-- 地图 -->
+            <div class="glass p-4 rounded-lg">
+                <h2 class="text-lg font-bold mb-3 flex items-center gap-2">
+                    🗺️ 实时态势地图
+                    <span class="text-xs bg-blue-500/20 text-blue-300 px-2 py-1 rounded">实时</span>
+                </h2>
+                <div id="map"></div>
+                <div class="mt-3 flex gap-4 text-xs text-gray-400">
+                    <span class="flex items-center gap-1"><span class="w-2 h-2 bg-red-500 rounded-full"></span> 激烈冲突</span>
+                    <span class="flex items-center gap-1"><span class="w-2 h-2 bg-yellow-500 rounded-full"></span> 间歇冲突</span>
+                    <span class="flex items-center gap-1"><span class="w-2 h-2 bg-blue-500 rounded-full"></span> 相对稳定</span>
+                </div>
+            </div>
+
+            <!-- 导出按钮 -->
+            <div class="glass p-4 rounded-lg flex gap-3">
+                <button onclick="exportData('csv')" class="flex-1 bg-blue-600 hover:bg-blue-700 py-2 rounded transition text-sm font-medium">
+                    📥 导出CSV数据
+                </button>
+                <button onclick="exportData('json')" class="flex-1 bg-slate-700 hover:bg-slate-600 py-2 rounded transition text-sm font-medium">
+                    📥 导出JSON
+                </button>
+            </div>
+        </div>
+
+        <!-- 右侧：新闻流 -->
+        <div class="glass p-4 rounded-lg h-fit">
+            <h2 class="text-lg font-bold mb-4 flex items-center gap-2">
+                📡 实时情报流
+                <span class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
+            </h2>
+            <div id="news-feed" class="space-y-3 max-h-[500px] overflow-y-auto pr-2">
+                <div class="text-gray-500 text-sm text-center py-8">正在连接数据源...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 1. 时钟功能
+        function updateClock() {
+            const now = new Date();
+            document.getElementById('clock').textContent = 
+                now.toLocaleString('zh-CN', { hour12: false }) + ' UTC+8';
+        }
+        setInterval(updateClock, 1000);
+        updateClock();
+
+        // 2. 计算冲突天数（从2022年2月24日开始）
+        const startDate = new Date('2022-02-24');
+        const today = new Date();
+        const diffDays = Math.floor((today - startDate) / (1000 * 60 * 60 * 24));
+        document.getElementById('conflict-days').textContent = diffDays + ' 天';
+
+        // 3. 初始化地图
+        const map = L.map('map').setView([48.5, 31.0], 6);
+        
+        // 使用免费的CartoDB深色地图
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+            attribution: '&copy; OpenStreetMap &copy; CARTO',
+            maxZoom: 19
+        }).addTo(map);
+
+        // 城市数据
+        const cities = [
+            { name: '基辅', lat: 50.45, lng: 30.52, risk: 'medium', events: 12 },
+            { name: '哈尔科夫', lat: 49.99, lng: 36.23, risk: 'high', events: 28 },
+            { name: '顿涅茨克', lat: 48.02, lng: 37.80, risk: 'high', events: 45 },
+            { name: '敖德萨', lat: 46.48, lng: 30.72, risk: 'medium', events: 8 },
+            { name: '利沃夫', lat: 49.84, lng: 24.03, risk: 'low', events: 3 },
+            { name: '赫尔松', lat: 46.64, lng: 32.62, risk: 'high', events: 19 }
+        ];
+
+        // 添加城市标记
+        cities.forEach(city => {
+            const color = city.risk === 'high' ? '#ef4444' : city.risk === 'medium' ? '#eab308' : '#3b82f6';
+            
+            const marker = L.circleMarker([city.lat, city.lng], {
+                radius: 8,
+                fillColor: color,
+                color: '#fff',
+                weight: 2,
+                opacity: 1,
+                fillOpacity: 0.8
+            }).addTo(map);
+
+            marker.bindPopup(`
+                <div style="color: #333;">
+                    <h3 style="margin: 0 0 5px 0; font-weight: bold;">${city.name}</h3>
+                    <p style="margin: 0; font-size: 12px;">风险等级: ${city.risk}</p>
+                    <p style="margin: 0; font-size: 12px;">今日事件: ${city.events}起</p>
+                </div>
+            `);
+
+            // 高风险城市添加脉冲圆圈
+            if (city.risk === 'high') {
+                L.circle([city.lat, city.lng], {
+                    color: color,
+                    fillColor: color,
+                    fillOpacity: 0.2,
+                    radius: 20000
+                }).addTo(map);
+            }
+        });
+
+        // 4. 模拟新闻数据（实际使用时可以替换为真实API）
+        const newsData = [
+            { time: '10:23', type: '冲突', content: '顿涅茨克地区报告炮击事件', location: '顿涅茨克' },
+            { time: '09:56', type: '防空', content: '基辅启动防空警报', location: '基辅' },
+            { time: '09:12', type: '外交', content: '欧盟宣布新一轮制裁方案', location: '布鲁塞尔' },
+            { time: '08:45', type: '人道', content: '人道主义物资抵达哈尔科夫', location: '哈尔科夫' },
+            { time: '08:30', type: '军事', content: '前线阵地交火报告', location: '赫尔松' }
+        ];
+
+        let eventCount = 0;
+        
+        function addNews(item, isNew = false) {
+            const feed = document.getElementById('news-feed');
+            const div = document.createElement('div');
+            div.className = 'news-item';
+            
+            const typeColors = {
+                '冲突': 'text-red-400',
+                '防空': 'text-blue-400',
+                '外交': 'text-purple-400',
+                '人道': 'text-green-400',
+                '军事': 'text-orange-400'
+            };
+            
+            div.innerHTML = `
+                <div class="flex justify-between text-xs text-gray-500 mb-1">
+                    <span class="${typeColors[item.type] || 'text-gray-400'} font-medium">[${item.type}]</span>
+                    <span>${item.time}</span>
+                </div>
+                <div class="text-sm text-gray-200">${item.content}</div>
+                <div class="text-xs text-gray-500 mt-1">📍 ${item.location}</div>
+            `;
+            
+            if (isNew) {
+                div.style.background = 'rgba(59, 130, 246, 0.1)';
+            }
+            
+            feed.insertBefore(div, feed.firstChild);
+            eventCount++;
+            document.getElementById('event-count').textContent = eventCount;
+            
+            // 保持最多20条
+            if (feed.children.length > 20) {
+                feed.removeChild(feed.lastChild);
+            }
+        }
+
+        // 初始化新闻
+        newsData.forEach(item => addNews(item));
+        document.getElementById('event-count').textContent = newsData.length;
+
+        // 模拟实时更新（每5秒添加一条）
+        const randomEvents = [
+            { type: '冲突', content: '检测到爆炸声', location: '顿涅茨克' },
+            { type: '防空', content: '防空系统启动', location: '基辅' },
+            { type: '军事', content: '无人机活动 detected', location: '敖德萨' },
+            { type: '人道', content: '平民疏散行动', location: '哈尔科夫' },
+            { type: '冲突', content: '前线阵地交火', location: '赫尔松' }
+        ];
+
+        setInterval(() => {
+            const random = randomEvents[Math.floor(Math.random() * randomEvents.length)];
+            const now = new Date();
+            const timeStr = now.getHours().toString().padStart(2, '0') + ':' + 
+                           now.getMinutes().toString().padStart(2, '0');
+            addNews({ ...random, time: timeStr }, true);
+        }, 5000);
+
+        // 5. 导出功能
+        function exportData(format) {
+            // 准备数据
+            const data = cities.map(c => ({
+                城市: c.name,
+                经度: c.lng,
+                纬度: c.lat,
+                风险等级: c.risk,
+                事件数: c.events,
+                导出时间: new Date().toLocaleString('zh-CN')
+            }));
+
+            if (format === 'csv') {
+                // 转换为CSV
+                const headers = Object.keys(data[0]).join(',');
+                const rows = data.map(row => Object.values(row).join(',')).join('\n');
+                const csv = '\ufeff' + headers + '\n' + rows; // \ufeff解决中文乱码
+                
+                downloadFile(csv, `ukraine_data_${new Date().toISOString().split('T')[0]}.csv`, 'text/csv;charset=utf-8;');
+                
+            } else if (format === 'json') {
+                // 转换为JSON
+                const json = JSON.stringify(data, null, 2);
+                downloadFile(json, `ukraine_data_${new Date().toISOString().split('T')[0]}.json`, 'application/json');
+            }
+        }
+
+        function downloadFile(content, filename, type) {
+            const blob = new Blob([content], { type });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = filename;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(url);
+            
+            // 显示提示
+            alert(`✅ 已成功导出: ${filename}`);
+        }
+
+        // 6. 获取真实新闻（使用NewsAPI - 需要免费API Key）
+        // 访问 https://newsapi.org/ 获取免费API Key（每月100次请求）
+        async function fetchRealNews() {
+            // 注意：把下面的 YOUR_API_KEY 换成你真实的Key
+            const API_KEY = 'YOUR_API_KEY'; 
+            const url = `https://newsapi.org/v2/everything?q=ukraine+war&sortBy=publishedAt&language=en&apiKey=${API_KEY}`;
+            
+            try {
+                const response = await fetch(url);
+                const data = await response.json();
+                
+                if (data.articles) {
+                    document.getElementById('news-feed').innerHTML = ''; // 清空模拟数据
+                    data.articles.slice(0, 10).forEach(article => {
+                        const date = new Date(article.publishedAt);
+                        const timeStr = date.getHours().toString().padStart(2, '0') + ':' + 
+                                       date.getMinutes().toString().padStart(2, '0');
+                        addNews({
+                            time: timeStr,
+                            type: '新闻',
+                            content: article.title,
+                            location: '国际'
+                        });
+                    });
+                }
+            } catch (error) {
+                console.log('使用模拟数据（如需真实数据请配置API Key）');
+            }
+        }
+
+        // 页面加载完成后尝试获取真实新闻（可选）
+        // fetchRealNews();
+    </script>
+</body>
+</html>
